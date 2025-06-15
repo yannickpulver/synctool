@@ -1,6 +1,6 @@
 # SyncTool
 
-A modern desktop application for one-way folder synchronization built with Compose Multiplatform. SyncTool provides a simple and intuitive interface for syncing files from a source folder to a target folder, with real-time progress tracking.
+A super simple, bare-bones folder synchronization built with Compose Multiplatform. SyncTool provides a simple and intuitive interface for syncing files from a source folder to a target folder, with progress tracking.
 
 ![SyncTool Interface](docs/image.png)
 
