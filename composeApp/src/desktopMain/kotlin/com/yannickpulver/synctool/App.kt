@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -56,7 +57,7 @@ import java.io.File
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
-fun App() {
+fun App(toolbarHeight: Int) {
     var sourceFolder by remember { mutableStateOf<File?>(null) }
     var targetFolder by remember { mutableStateOf<File?>(null) }
     var isSyncing by remember { mutableStateOf(false) }
@@ -73,7 +74,8 @@ fun App() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
+                .padding(top = toolbarHeight.dp)
+                .padding(horizontal = 24.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Folder selection boxes
