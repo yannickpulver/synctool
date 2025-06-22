@@ -1,6 +1,7 @@
 package com.yannickpulver.synctool
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
@@ -60,6 +62,7 @@ import java.io.File
 fun App(toolbarHeight: Int) {
     var sourceFolder by remember { mutableStateOf<File?>(null) }
     var targetFolder by remember { mutableStateOf<File?>(null) }
+    var deleteExtraFiles by remember { mutableStateOf(false) }
     var isSyncing by remember { mutableStateOf(false) }
     var syncProgress by remember { mutableStateOf(0f) }
     var syncProgressText by remember { mutableStateOf("") }
@@ -118,7 +121,28 @@ fun App(toolbarHeight: Int) {
                 )
             }
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Delete extra files checkbox
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Checkbox(
+                    checked = deleteExtraFiles,
+                    onCheckedChange = { deleteExtraFiles = it }
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Delete files in target that don't exist in source",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                    modifier = Modifier.clickable { deleteExtraFiles = !deleteExtraFiles }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Sync/Stop buttons
             Row(
@@ -133,6 +157,7 @@ fun App(toolbarHeight: Int) {
                                 performSync(
                                     source = sourceFolder!!,
                                     target = targetFolder!!,
+                                    deleteExtraFiles = deleteExtraFiles,
                                     onSyncStart = {
                                         isSyncing = true
                                         syncProgress = 0f
@@ -412,6 +437,7 @@ fun FolderSelectionBox(
 suspend fun performSync(
     source: File,
     target: File,
+    deleteExtraFiles: Boolean,
     onSyncStart: () -> Unit,
     onSyncProgress: (Float, String) -> Unit,
     onSyncComplete: (String) -> Unit,
@@ -424,13 +450,13 @@ suspend fun performSync(
             // Use rsync if available, otherwise fall back to manual copy
             val result = try {
                 println("SyncTool: Attempting to use rsync...")
-                executeRsync(source, target, onSyncProgress)
+                executeRsync(source, target, deleteExtraFiles, onSyncProgress)
             } catch (e: CancellationException) {
                 throw e // Re-throw cancellation to be handled by outer catch
             } catch (e: Exception) {
                 // Fallback to manual copy if rsync is not available
                 println("SyncTool: rsync failed (${e.message}), falling back to manual copy...")
-                executeManualSync(source, target, onSyncProgress)
+                executeManualSync(source, target, deleteExtraFiles, onSyncProgress)
             }
 
             onSyncComplete(result)
@@ -446,20 +472,23 @@ suspend fun performSync(
 private suspend fun executeRsync(
     source: File,
     target: File,
+    deleteExtraFiles: Boolean,
     onProgress: (Float, String) -> Unit
 ): String = withContext(Dispatchers.IO) {
     // First, count total files to sync
     val totalFiles = source.walkTopDown().count { it.isFile }
     onProgress(0f, "0 / $totalFiles files")
 
-    val command = listOf(
-        "rsync",
-        "-av",
-        "--times",  // Explicitly preserve modification times
-        "--progress",  // Progress output (compatible with older rsync versions)
-        "${source.absolutePath}/",
-        target.absolutePath
-    )
+    val command = buildList {
+        add("rsync")
+        add("-av")
+        add("--progress")  // Progress output (compatible with older rsync versions)
+        if (deleteExtraFiles) {
+            add("--delete")  // Delete files in target that don't exist in source
+        }
+        add("${source.absolutePath}/")
+        add(target.absolutePath)
+    }
 
     val processBuilder = ProcessBuilder(command)
     val process = processBuilder.start()
@@ -536,7 +565,8 @@ private suspend fun executeRsync(
 
         onProgress(1f, "$totalFiles / $totalFiles files") // Ensure we show 100% at the end
         println("SyncTool: rsync completed successfully")
-        "Files synchronized using rsync (additive mode - no files deleted)\n${outputBuilder.toString()}"
+        val syncMode = if (deleteExtraFiles) "with deletion" else "additive mode - no files deleted"
+        "Files synchronized using rsync ($syncMode)\n${outputBuilder.toString()}"
     } catch (e: Exception) {
         // Kill the process if still running (in case of cancellation)
         if (process.isAlive) {
@@ -549,6 +579,7 @@ private suspend fun executeRsync(
 private suspend fun executeManualSync(
     source: File,
     target: File,
+    deleteExtraFiles: Boolean,
     onProgress: (Float, String) -> Unit
 ): String = withContext(Dispatchers.IO) {
     if (!target.exists()) {
@@ -558,6 +589,7 @@ private suspend fun executeManualSync(
     var newFiles = 0
     var updatedFiles = 0
     var skippedFiles = 0
+    var deletedFiles = 0
 
     // Count total files first for progress tracking
     val totalFiles = source.walkTopDown().count { it.isFile }
@@ -567,6 +599,7 @@ private suspend fun executeManualSync(
 
     println("SyncTool: Starting manual file copy (rsync not available)")
 
+    // First pass: copy/update files from source to target
     source.walkTopDown().forEach { sourceFile ->
         // Check for cancellation
         ensureActive()
@@ -603,7 +636,41 @@ private suspend fun executeManualSync(
         }
     }
 
-    println("SyncTool: Manual sync completed - New: $newFiles, Updated: $updatedFiles, Skipped: $skippedFiles")
-    "Files synchronized manually (additive mode)\n" +
-            "New files: $newFiles, Updated files: $updatedFiles, Skipped files: $skippedFiles"
+    // Second pass: delete extra files in target if deleteExtraFiles is enabled
+    if (deleteExtraFiles) {
+        onProgress(1f, "Checking for extra files to delete...")
+        
+        target.walkTopDown().forEach { targetFile ->
+            // Check for cancellation
+            ensureActive()
+
+            val relativePath = targetFile.relativeTo(target)
+            val sourceFile = File(source, relativePath.path)
+
+            if (targetFile.isFile && !sourceFile.exists()) {
+                // File exists in target but not in source - delete it
+                targetFile.delete()
+                deletedFiles++
+                println("SyncTool: Deleted extra file: ${targetFile.absolutePath}")
+            } else if (targetFile.isDirectory && !sourceFile.exists()) {
+                // Directory exists in target but not in source
+                // Only delete if it's empty (after we've deleted files)
+                if (targetFile.listFiles()?.isEmpty() == true) {
+                    targetFile.delete()
+                    println("SyncTool: Deleted empty directory: ${targetFile.absolutePath}")
+                }
+            }
+        }
+    }
+
+    val resultMessage = if (deleteExtraFiles) {
+        "Files synchronized manually (with deletion)\n" +
+                "New files: $newFiles, Updated files: $updatedFiles, Skipped files: $skippedFiles, Deleted files: $deletedFiles"
+    } else {
+        "Files synchronized manually (additive mode)\n" +
+                "New files: $newFiles, Updated files: $updatedFiles, Skipped files: $skippedFiles"
+    }
+
+    println("SyncTool: Manual sync completed - New: $newFiles, Updated: $updatedFiles, Skipped: $skippedFiles, Deleted: $deletedFiles")
+    resultMessage
 }
